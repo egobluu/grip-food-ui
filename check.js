@@ -1,0 +1,143 @@
+const assert = require('node:assert/strict');
+const scrollCalls=[];
+const app = { innerHTML: '', focus(){}, scrollIntoView(options){scrollCalls.push(options);} }, events = {};
+global.document = { querySelector: selector => selector==='.gps-card'?null:app, addEventListener: (name, fn) => { events[name] = fn; } };
+global.setTimeout = () => 1;
+let trackingTick;global.setInterval = fn => {trackingTick=fn;return 1;};
+global.FormData = class { constructor(form){this.form=form;} *[Symbol.iterator](){yield* Object.entries(this.form.data);} };
+const { cartCount, cartSubtotal, canCancel, customerError, orderStates, normalizePhone, nextId, tracking, orderItems, orderTotals, setOrderStatus } = require('./app.js');
+
+assert.equal(cartCount({ 101: 2, 102: 1 }), 3);
+assert.equal(cartSubtotal({ 101: 2, 102: 1 }, [{ id: 101, price: 89 }, { id: 102, price: 109 }]), 287);
+assert.equal(canCancel('รอร้านยืนยัน'), true);
+assert.equal(canCancel('กำลังจัดส่ง'), false);
+const click = dataset => events.click({ target: { closest: () => ({ dataset, matches: () => false }) } });
+click({ add: '101' });
+assert.match(app.innerHTML, /count-bubble">1/);
+assert.match(app.innerHTML, /฿114/);
+click({ qty: '101', delta: '1' });
+assert.match(app.innerHTML, /count-bubble">2/);
+assert.match(app.innerHTML, /฿203/);
+click({ add: '105' });
+assert.match(app.innerHTML, /2 ร้านในตะกร้าเดียว/);
+assert.match(app.innerHTML, /count-bubble">3/);
+assert.match(app.innerHTML, /฿357/);
+click({remove:'105'});
+click({ remove: '101' });
+assert.match(app.innerHTML, /ตะกร้ายังว่าง/);
+click({ add: '104' });
+assert.match(app.innerHTML, /ไม่พร้อมขาย/);
+assert.match(app.innerHTML, /ตะกร้ายังว่าง/);
+assert.equal(normalizePhone('081-234-5678'),'0812345678');
+assert.equal(nextId([],'C'),'C001');
+assert.ok(customerError({id:'C010',name:'Test',phone:'0812345678',email:'MINTRA@EXAMPLE.COM'}));
+assert.deepEqual(orderStates({status:'รอชำระเงิน',paymentStatus:'รอชำระเงิน'},'merchant'),['รอชำระเงิน','ยกเลิกแล้ว']);
+assert.deepEqual(orderStates({status:'กำลังจัดส่ง',paymentStatus:'ชำระเงินสำเร็จ'},'merchant'),['กำลังจัดส่ง','จัดส่งสำเร็จ']);
+const submit = data => events.submit({target:{id:data.id?{value:data.id}:'modal-form',getAttribute:()=> 'modal-form',data,querySelector:()=>({files:[]})},preventDefault(){}});
+click({add:'101'});click({action:'checkout'});
+assert.match(app.innerHTML,/ชำระเงิน/);
+assert.match(app.innerHTML,/รอชำระเงิน/);
+const orderId=app.innerHTML.match(/data-pay-success="([^"]+)"/)[1];
+click({role:'merchant'});click({page:'orders'});
+assert.ok(!app.innerHTML.includes(orderId),'unpaid order must not reach merchant');
+click({role:'customer'});click({payment:orderId});click({payFail:orderId});
+assert.match(app.innerHTML,/ชำระเงินไม่สำเร็จ/);
+click({payment:orderId});click({paySuccess:orderId});
+assert.match(app.innerHTML,/ชำระเงินสำเร็จ/);
+click({role:'merchant'});click({page:'orders'});
+assert.ok(app.innerHTML.includes(orderId));
+click({deleteMenu:'101'});submit({});click({detail:orderId});
+assert.match(app.innerHTML,/ข้าวกะเพราไก่ไข่ดาว/,'history must preserve deleted menu name');
+assert.match(app.innerHTML,/฿89/);
+click({role:'customer'});click({page:'orders'});click({cancel:orderId});submit({});
+assert.match(app.innerHTML,/คืนเงินแล้ว/);
+click({role:'merchant'});click({page:'orders'});assert.ok(app.innerHTML.includes(orderId),'merchant must retain paid then refunded order history');click({role:'customer'});
+click({action:'login'});submit({username:'wrong',password:'bad',otp:''});
+assert.match(app.textContent,/ไม่ถูกต้อง/);
+click({action:'request-otp'});submit({username:'mintra@example.com',password:'GripFood123',otp:'123456'});
+assert.match(app.innerHTML,/เข้าสู่ระบบสำเร็จ/);
+click({action:'login'});submit({username:'mintra@example.com',password:'GripFood123',otp:'123456'});
+assert.match(app.textContent,/ขอ OTP/,'OTP cannot be reused');
+click({role:'admin'});click({modal:'customer'});submit({id:'C010',name:'UI Test',phone:'0800000099',email:'uitest@example.com'});click({page:'customers'});assert.match(app.innerHTML,/C010/,'customer form must submit even when input name shadows form.id');
+click({role:'customer'});click({action:'login'});click({action:'request-otp'});const realNow=Date.now;Date.now=()=>realNow()+120001;submit({username:'mintra@example.com',password:'GripFood123',otp:'123456'});assert.match(app.textContent,/ขอ OTP/,'expired OTP must be rejected');Date.now=realNow;
+const tracked={id:'TRACK-TEST',customerId:'C001',shopId:1,created:new Date().toISOString(),status:'รอชำระเงิน',paymentStatus:'รอชำระเงิน',items:[{id:101,name:'กะเพรา',price:89,qty:2},{id:102,name:'ข้าวผัด',price:109,qty:1}],subtotal:287,delivery:25,discount:0,total:312,address:'Test',history:[]};
+assert.match(orderItems(tracked),/ราคา\/ชิ้น/);assert.match(orderItems(tracked),/฿178/);assert.match(orderItems(tracked),/฿109/);assert.match(orderTotals(tracked),/฿287/);assert.match(orderTotals(tracked),/฿312/);
+setOrderStatus(tracked,'รอร้านยืนยัน');setOrderStatus(tracked,'กำลังเตรียมอาหาร');setOrderStatus(tracked,'กำลังจัดส่ง');
+assert.equal(tracked.history.length,3);setOrderStatus(tracked,'กำลังจัดส่ง');assert.equal(tracked.history.length,3,'saving unchanged status must not duplicate history');
+assert.match(tracking(tracked),/aria-current="step"><button[^>]+><span>4/);assert.ok(!tracking(tracked).includes('data-cancel='),'no customer cancellation during delivery');
+setOrderStatus(tracked,'ยกเลิกแล้ว');assert.ok(!tracking(tracked).includes('aria-current="step"'));assert.match(tracking(tracked),/ไม่ดำเนินการจัดส่งต่อ/);
+assert.equal(cartSubtotal({1:3,2:1},[{id:1,price:0.1},{id:2,price:0.2}]),0.5);
+const fs=require('node:fs');for(const asset of ['mascot-courier.png','gripfood-logo.png','menu-photos.png'])assert.ok(fs.existsSync(require('node:path').join(__dirname,'assets',asset)));
+console.log('Grip Food requirement checks passed');
+const {statusMascot,validAvatar,frogAvatar}=require('./app.js');
+for(const [status,key] of [['รอชำระเงิน','waiting'],['รอร้านยืนยัน','waiting'],['กำลังเตรียมอาหาร','cooking'],['กำลังจัดส่ง','driving']]){assert.match(statusMascot(status),new RegExp(`mascot-${key}\\.gif`));assert.ok(!statusMascot(status,false).includes('.gif'));}
+assert.match(statusMascot('จัดส่งสำเร็จ'),/mascot-delivered.png/);assert.ok(!statusMascot('ยกเลิกแล้ว').includes('.gif'));assert.equal(validAvatar('bad'),'delivered');assert.match(frogAvatar('cooking'),/กบเชฟ/);
+click({role:'customer'});click({modal:'profile'});submit({id:'C001',name:'มินตรา ใจดี',phone:'0812345678',email:'mintra@example.com',avatar:'waiting'});click({page:'account'});assert.match(app.innerHTML,/frog-waiting profile-avatar/);
+click({role:'merchant'});click({page:'store'});click({modal:'store'});submit({name:'ครัวบ้านสวน',phone:'021234567',address:'สุขุมวิท',bank:'พร้อมเพย์',hours:'09:00–21:00',status:'เปิดให้บริการ',avatar:'driving'});assert.match(app.innerHTML,/frog-driving profile-avatar/);
+for(const name of ['waiting','cooking','driving']){const bytes=fs.readFileSync(require('node:path').join(__dirname,'assets',`mascot-${name}.gif`));assert.match(bytes.subarray(0,6).toString(),/GIF8[79]a/);}
+console.log('Status GIF mapping, pause controls and customer/merchant avatar checks passed');
+
+const {routePoint,routeProgress}=require('./app.js');
+assert.deepEqual(routePoint(0),[82,250]);assert.deepEqual(routePoint(1),[635,220]);assert.deepEqual(routePoint(-1),[82,250]);assert.equal(routeProgress(1000,31000),0.5);assert.equal(routeProgress(1000,999),0);assert.equal(routeProgress(1000,999999),1);
+click({role:'customer'});click({track:'GF-240901'});click({previewStatus:'กำลังจัดส่ง'});assert.match(app.innerHTML,/GPS/);assert.match(app.innerHTML,/สถานะออเดอร์ปัจจุบัน: <b>กำลังเตรียมอาหาร/);assert.match(app.innerHTML,/ดูแอนิเมชันเท่านั้น/);click({action:'actual-status'});assert.ok(!app.innerHTML.includes('data-route-start'));
+console.log('GPS timing, route endpoints and preview isolation checks passed');
+
+click({action:'play-timeline'});assert.match(app.innerHTML,/ANIMATION PREVIEW/);const timelineNow=Date.now;let demoNow=timelineNow();Date.now=()=>demoNow;demoNow+=9000;trackingTick();assert.match(app.innerHTML,/mascot-cooking.gif/);demoNow+=13000;trackingTick();assert.match(app.innerHTML,/mascot-driving.gif/);demoNow+=61000;trackingTick();assert.match(app.innerHTML,/mascot-delivered.png/);assert.match(app.innerHTML,/สถานะออเดอร์ปัจจุบัน: <b>กำลังเตรียมอาหาร/);Date.now=timelineNow;
+console.log('Timed preview completes without changing order status');
+
+scrollCalls.length=0;click({previewStatus:'กำลังจัดส่ง'});assert.deepEqual(scrollCalls.at(-1),{block:'center',behavior:'instant'},'choosing a stage must reveal the mascot above the buttons');click({action:'actual-status'});assert.equal(scrollCalls.length,2);click({action:'play-timeline'});assert.equal(scrollCalls.length,3,'starting timed preview must reveal the animation too');
+console.log('Animation visibility after stage/actual/timeline clicks passed');
+
+assert.match(app.innerHTML,/class="order-status-scene"/);assert.ok(!app.innerHTML.includes('tracking-banner'),'order animation scene must not use the generic banner class hidden in Brave');
+console.log('Order animation scene class regression passed');
+
+const {cartGroups}=require('./app.js');
+assert.deepEqual(cartGroups({1:2,2:1},[{id:1,shopId:1,name:'A',price:0.1},{id:2,shopId:2,name:'B',price:0.2}]).map(g=>[g.shopId,g.subtotal,g.delivery,g.total]),[[1,0.2,25,25.2],[2,0.2,25,25.2]]);
+click({role:'customer'});click({add:'102'});click({add:'102'});click({add:'105'});assert.match(app.innerHTML,/2 ร้านในตะกร้าเดียว/);assert.match(app.innerHTML,/฿397/);click({action:'checkout'});assert.match(app.innerHTML,/ชำระรวม 2 ร้าน · ฿397/);const batch=app.innerHTML.match(/data-pay-success="([^"]+)"/)[1];assert.ok(batch.startsWith('CO-'));const paymentHtml=app.innerHTML.split('aria-label="ชำระเงิน"')[1],ids=[...new Set([...paymentHtml.matchAll(/aria-label="รายการอาหาร ([^"]+)"/g)].map(m=>m[1]))];assert.equal(ids.length,2);assert.ok(paymentHtml.includes('ข้าวผัดกุ้ง'));assert.ok(paymentHtml.includes('สลัดอะโวคาโด'));
+click({payFail:batch});const card=id=>app.innerHTML.split('<article class="order-card">').find(part=>part.includes(id));for(const id of ids)assert.match(card(id),/ชำระเงินไม่สำเร็จ/);click({payment:batch});click({paySuccess:batch});for(const id of ids)assert.match(card(id),/ชำระเงินสำเร็จ/);click({role:'merchant'});click({page:'orders'});assert.ok(app.innerHTML.includes(ids[0]));assert.ok(!app.innerHTML.includes(ids[1]),'merchant must receive only its own items');click({role:'customer'});click({page:'orders'});click({cancel:ids[0]});submit({});assert.match(card(ids[0]),/คืนเงินแล้ว/);assert.match(card(ids[1]),/ชำระเงินสำเร็จ/,'cancelling one shop must not refund another');
+console.log('Multi-shop cart, delivery totals, combined payment, merchant isolation and partial cancellation passed');
+const newMenuIds=Array.from({length:12},(_,i)=>107+i);click({role:'customer'});for(const id of newMenuIds)assert.ok(app.innerHTML.includes(`data-open-menu="${id}"`),'new menu must be visible and openable');click({openMenu:'107'});assert.match(app.innerHTML,/MEET THE RESTAURANT/);assert.match(app.innerHTML,/ข้าวกะเพราหมูสับไข่ดาว/);assert.match(app.innerHTML,/เมนูทั้งหมดของร้าน/);assert.ok(!app.innerHTML.includes('data-open-menu="105"'),'shop page must not mix menus from another shop');click({add:'107'});assert.match(app.innerHTML,/count-bubble">1/);click({action:'cart'});click({openMenu:'116'});assert.match(app.innerHTML,/Green Bowl/);assert.ok(!app.innerHTML.includes('data-open-menu="107"'));click({add:'116'});assert.match(app.innerHTML,/2 ร้านในตะกร้าเดียว/);assert.match(app.innerHTML,/count-bubble">2/);click({action:'cart'});click({openMenu:'111'});assert.match(app.innerHTML,/ร้านรออนุมัติ/);assert.match(app.innerHTML,/data-add="111" disabled/,'opening a card must not bypass shop approval');click({page:'explore'});assert.ok(app.innerHTML.includes('data-open-menu="116"'));
+console.log('Added menus, card-to-shop navigation, shop-only menus, cart actions and approval guards passed');
+
+const loginFields={username:{value:''},password:{value:''},otp:{value:''}};
+const oldQuerySelector=document.querySelector;
+document.querySelector=selector=>{const match=selector.match(/^#modal-form \[name="(username|password|otp)"\]$/);return match?loginFields[match[1]]:oldQuerySelector(selector);};
+for(const [role,username] of Object.entries({customer:'mintra@example.com',merchant:'merchant@grip.test',admin:'admin@grip.test'})){
+  click({role});click({action:'login'});
+  assert.match(app.innerHTML,/data-action="fill-demo-login"/);
+  assert.ok(app.innerHTML.includes(`User: <code>${username}</code>`));
+  assert.match(app.innerHTML,/Password: <code>GripFood123<\/code>/);
+  click({action:'fill-demo-login'});
+  assert.deepEqual(Object.fromEntries(Object.entries(loginFields).map(([key,field])=>[key,field.value])),{username,password:'GripFood123',otp:'123456'});
+  submit(Object.fromEntries(Object.entries(loginFields).map(([key,field])=>[key,field.value])));
+  assert.match(app.innerHTML,/เข้าสู่ระบบสำเร็จ/);
+}
+document.querySelector=oldQuerySelector;
+console.log('Avatar autofill and usable demo credentials passed for all roles');
+
+const registerFields=Object.fromEntries(['id','name','phone','email','password'].map(key=>[key,{value:''}]));
+document.querySelector=selector=>{const match=selector.match(/^#modal-form \[name="(id|name|phone|email|password)"\]$/);return match?registerFields[match[1]]:oldQuerySelector(selector);};
+click({role:'customer'});click({modal:'register'});
+assert.match(app.innerHTML,/novalidate/);
+click({registerExample:'wrong'});
+assert.match(app.textContent,/กรอกผิด/);
+assert.equal(registerFields.phone.value,'abc');
+click({registerExample:'correct'});
+assert.match(registerFields.email.value,/@example.com$/);
+submit(Object.fromEntries(Object.entries(registerFields).map(([key,field])=>[key,field.value])));
+assert.match(app.innerHTML,/สมัครสำเร็จ/);
+click({modal:'register'});submit({id:'C001',name:'อะไรก็ได้',phone:'abc',email:'not-email',password:'x'});
+assert.match(app.innerHTML,/สมัครสำเร็จ/);
+assert.match(app.innerHTML,/อะไรก็ได้/);
+click({role:'admin'});click({page:'customers'});assert.match(app.innerHTML,/มินตรา ใจดี/,'demo signup must not overwrite existing IDs');
+click({role:'merchant'});click({modal:'register'});submit({name:'Bad',phone:'abc',address:'x',bank:'x',hours:'x'});assert.match(app.textContent,/9–10 หลัก/,'merchant validation stays intact');
+document.querySelector=oldQuerySelector;
+console.log('Permissive customer demo registration and wrong/correct previews passed');
+
+const {authRoute}=require('./app.js');
+assert.equal(authRoute('/login'),'login');assert.equal(authRoute('/register/'),'register');assert.equal(authRoute('/other'),'');
+click({role:'customer'});click({action:'login'});assert.match(app.innerHTML,/auth-page/);assert.ok(!app.innerHTML.includes('modal-backdrop'));assert.match(app.innerHTML,/href="\/register"/);
+assert.ok(!/>([^<]*)(demo|ตัวอย่าง|จำลอง|ทดลอง)/i.test(app.innerHTML));
+click({modal:'register'});assert.match(app.innerHTML,/auth-page/);assert.match(app.innerHTML,/href="\/login"/);
+click({action:'close-modal'});assert.ok(!app.innerHTML.includes('auth-page'));
+console.log('Standalone auth routes and clean presentation checks passed');
